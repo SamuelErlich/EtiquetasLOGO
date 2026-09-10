@@ -32,12 +32,16 @@ type TextFontId =
   | "courierOblique"
   | "courierBoldOblique";
 
+type TextAlign = "left" | "center" | "right";
+
 type TextPlacement = {
   x: number;
   y: number;
+  width: number;
   fontSize: number;
   rotation: number;
   font: TextFontId;
+  align: TextAlign;
 };
 
 type PdfMetrics = {
@@ -64,9 +68,11 @@ const DEFAULT_LOGO_PLACEMENT: LogoPlacement = {
 const DEFAULT_TEXT_PLACEMENT: TextPlacement = {
   x: 0.08,
   y: 0.08,
+  width: 0.42,
   fontSize: 16,
   rotation: 0,
   font: "helvetica",
+  align: "left",
 };
 
 const FONT_OPTIONS: Array<{
@@ -91,7 +97,7 @@ const FONT_OPTIONS: Array<{
   { id: "courierBoldOblique", label: "Courier Negrito Itálico", pdf: StandardFonts.CourierBoldOblique, cssFamily: '"Courier New", Courier, monospace', cssWeight: 700, cssStyle: "italic" },
 ];
 
-const STORAGE_KEY = "etiqueta-logo-config-v3";
+const STORAGE_KEY = "etiqueta-logo-config-v4";
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
@@ -125,6 +131,7 @@ export default function LabelEditor() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("Envie um ou mais PDFs de etiquetas para começar.");
   const [error, setError] = useState("");
+  const [selectedElement, setSelectedElement] = useState<"logo" | "text" | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -139,7 +146,10 @@ export default function LabelEditor() {
   }>(null);
 
   useEffect(() => {
-    const raw = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem("etiqueta-logo-config-v2");
+    const raw =
+      localStorage.getItem(STORAGE_KEY) ??
+      localStorage.getItem("etiqueta-logo-config-v3") ??
+      localStorage.getItem("etiqueta-logo-config-v2");
     if (!raw) return;
 
     try {
@@ -289,7 +299,8 @@ export default function LabelEditor() {
       setLogoAspect(image.naturalWidth / image.naturalHeight || 1);
       setLogoFile(file);
       setLogoUrl(url);
-      setMessage("Logo carregada. Arraste, redimensione ou gire como quiser.");
+      setSelectedElement("logo");
+      setMessage("Logo carregada. Clique nela para selecionar, arrastar, redimensionar ou excluir.");
     };
     image.onerror = () => {
       URL.revokeObjectURL(url);
@@ -318,6 +329,7 @@ export default function LabelEditor() {
 
     event.preventDefault();
     event.stopPropagation();
+    setSelectedElement(mode.startsWith("logo") ? "logo" : "text");
     event.currentTarget.setPointerCapture(event.pointerId);
     dragRef.current = {
       mode,
@@ -354,7 +366,7 @@ export default function LabelEditor() {
     }
 
     if (drag.mode === "text-move") {
-      const nextX = clamp(drag.startText.x + dx, 0, 0.98);
+      const nextX = clamp(drag.startText.x + dx, 0, 1 - drag.startText.width);
       const nextY = clamp(drag.startText.y + dy, 0, 0.98);
       setTextPlacement((current) => ({ ...current, x: nextX, y: nextY }));
     }
@@ -370,6 +382,43 @@ export default function LabelEditor() {
     }
     dragRef.current = null;
   }
+
+  function deleteElement(element: "logo" | "text") {
+    if (element === "logo") {
+      setLogoFile(null);
+      setLogoUrl("");
+      setMessage("Logo removida da etiqueta.");
+    } else {
+      setCustomText("");
+      setMessage("Texto removido da etiqueta.");
+    }
+    setSelectedElement(null);
+  }
+
+  function deleteSelectedElement() {
+    if (!selectedElement) return;
+    deleteElement(selectedElement);
+  }
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!selectedElement || (event.key !== "Delete" && event.key !== "Backspace")) return;
+
+      const target = event.target as HTMLElement | null;
+      const isEditing =
+        target?.tagName === "INPUT" ||
+        target?.tagName === "TEXTAREA" ||
+        target?.tagName === "SELECT" ||
+        target?.isContentEditable;
+      if (isEditing) return;
+
+      event.preventDefault();
+      deleteSelectedElement();
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedElement]);
 
   function saveConfig() {
     const config: SavedConfig = {
@@ -387,6 +436,7 @@ export default function LabelEditor() {
     setTextPlacement(DEFAULT_TEXT_PLACEMENT);
     setCustomText("");
     setApplyToAll(true);
+    setSelectedElement(null);
     setMessage("Configuração restaurada.");
   }
 
@@ -460,13 +510,23 @@ export default function LabelEditor() {
         const pdfRotation = -textPlacement.rotation;
         const angle = (pdfRotation * Math.PI) / 180;
 
+        const boxWidth = textPlacement.width * pageWidth;
+
         lines.forEach((line, index) => {
           if (!line) return;
 
-          // A rotação do texto usa o canto superior esquerdo como pivô,
-          // igual à pré-visualização no navegador.
+          const lineWidth = font.widthOfTextAtSize(line, fontSize);
+          const alignmentOffset =
+            textPlacement.align === "center"
+              ? Math.max(0, (boxWidth - lineWidth) / 2)
+              : textPlacement.align === "right"
+                ? Math.max(0, boxWidth - lineWidth)
+                : 0;
+
+          // A rotação usa o canto superior esquerdo da caixa de texto como pivô,
+          // exatamente como na pré-visualização.
           const baselineOffset = fontSize + index * lineHeight;
-          const localX = 0;
+          const localX = alignmentOffset;
           const localY = -baselineOffset;
           const rotatedX = localX * Math.cos(angle) - localY * Math.sin(angle);
           const rotatedY = localX * Math.sin(angle) + localY * Math.cos(angle);
@@ -597,9 +657,10 @@ export default function LabelEditor() {
                   <strong>{metrics?.pageCount ?? 0} etiquetas</strong>
                   <span>{pdfFiles.length} PDF{pdfFiles.length === 1 ? "" : "s"} carregado{pdfFiles.length === 1 ? "" : "s"}</span>
                 </div>
-                <label className="mini-file-button">
+                <label className="reload-pdf-button">
                   <input type="file" accept="application/pdf" multiple onChange={onPdfChange} />
-                  Trocar PDFs
+                  <span className="reload-pdf-icon">＋</span>
+                  <span>Carregar outro PDF</span>
                 </label>
               </div>
 
@@ -607,6 +668,7 @@ export default function LabelEditor() {
                 <div
                   className="pdf-stage"
                   ref={stageRef}
+                  onPointerDown={() => setSelectedElement(null)}
                   onPointerMove={pointerMove}
                   onPointerUp={pointerUp}
                   onPointerCancel={pointerUp}
@@ -615,7 +677,7 @@ export default function LabelEditor() {
 
                   {logoUrl && (
                     <div
-                      className="logo-overlay"
+                      className={`logo-overlay ${selectedElement === "logo" ? "selected" : ""}`}
                       style={{
                         left: `${logoPlacement.x * 100}%`,
                         top: `${logoPlacement.y * 100}%`,
@@ -626,22 +688,42 @@ export default function LabelEditor() {
                       onPointerDown={(e) => pointerDown(e, "logo-move")}
                     >
                       <img src={logoUrl} alt="Logo sobre a etiqueta" draggable={false} />
-                      <button
-                        type="button"
-                        className="resize-handle"
-                        aria-label="Redimensionar logo"
-                        onPointerDown={(e) => pointerDown(e, "logo-resize")}
-                      />
+                      {selectedElement === "logo" && (
+                        <>
+                          <button
+                            type="button"
+                            className="element-trash"
+                            style={{ transform: `rotate(${-logoPlacement.rotation}deg)` }}
+                            aria-label="Excluir logo"
+                            title="Excluir logo"
+                            onPointerDown={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              deleteElement("logo");
+                            }}
+                          >
+                            🗑
+                          </button>
+                          <button
+                            type="button"
+                            className="resize-handle"
+                            aria-label="Redimensionar logo"
+                            onPointerDown={(e) => pointerDown(e, "logo-resize")}
+                          />
+                        </>
+                      )}
                     </div>
                   )}
 
                   {customText.trim() && (
                     <div
-                      className="text-overlay"
+                      className={`text-overlay ${selectedElement === "text" ? "selected" : ""}`}
                       style={{
                         left: `${textPlacement.x * 100}%`,
                         top: `${textPlacement.y * 100}%`,
+                        width: `${textPlacement.width * 100}%`,
                         fontSize: `${textPlacement.fontSize * previewScale}px`,
+                        textAlign: textPlacement.align,
                         transform: `rotate(${textPlacement.rotation}deg)`,
                         transformOrigin: "top left",
                         fontFamily: selectedFont.cssFamily,
@@ -650,7 +732,23 @@ export default function LabelEditor() {
                       }}
                       onPointerDown={(e) => pointerDown(e, "text-move")}
                     >
-                      {customText}
+                      <span>{customText}</span>
+                      {selectedElement === "text" && (
+                        <button
+                          type="button"
+                          className="element-trash"
+                          style={{ transform: `rotate(${-textPlacement.rotation}deg)` }}
+                          aria-label="Excluir texto"
+                          title="Excluir texto"
+                          onPointerDown={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            deleteElement("text");
+                          }}
+                        >
+                          🗑
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -693,6 +791,30 @@ export default function LabelEditor() {
               </small>
             </span>
           </label>
+
+          <div className={`selection-toolbar ${selectedElement ? "has-selection" : ""}`}>
+            <div>
+              <span>ELEMENTO SELECIONADO</span>
+              <strong>
+                {selectedElement === "logo"
+                  ? "Logo"
+                  : selectedElement === "text"
+                    ? "Texto personalizado"
+                    : "Clique na logo ou no texto"}
+              </strong>
+            </div>
+            <button
+              type="button"
+              className="delete-selected"
+              disabled={!selectedElement}
+              onClick={deleteSelectedElement}
+              title="Excluir elemento selecionado"
+            >
+              <span aria-hidden="true">🗑</span>
+              Excluir
+            </button>
+          </div>
+          <p className="delete-shortcut">Dica: com um elemento selecionado, pressione <kbd>Delete</kbd> ou <kbd>Backspace</kbd>.</p>
 
           <div className="section-label">LOGO</div>
           <div className="control-group">
@@ -784,7 +906,15 @@ export default function LabelEditor() {
               value={customText}
               maxLength={180}
               placeholder="Ex.: Obrigado pela compra!"
-              onChange={(e) => setCustomText(e.target.value)}
+              onFocus={() => {
+                if (customText.trim()) setSelectedElement("text");
+              }}
+              onChange={(e) => {
+                const value = e.target.value;
+                setCustomText(value);
+                if (value.trim()) setSelectedElement("text");
+                else if (selectedElement === "text") setSelectedElement(null);
+              }}
             />
             <small>{customText.length}/180 caracteres · arraste o texto na prévia para posicionar</small>
           </label>
@@ -799,6 +929,48 @@ export default function LabelEditor() {
                 <option key={option.id} value={option.id}>{option.label}</option>
               ))}
             </select>
+          </label>
+
+          <div className="text-editor-toolbar" role="group" aria-label="Alinhamento do texto">
+            <span>Alinhamento</span>
+            <div className="alignment-buttons">
+              {([
+                ["left", "Esquerda", "≡"],
+                ["center", "Centro", "≡"],
+                ["right", "Direita", "≡"],
+              ] as const).map(([align, label, icon]) => (
+                <button
+                  key={align}
+                  type="button"
+                  className={`align-button align-${align} ${textPlacement.align === align ? "active" : ""}`}
+                  onClick={() => {
+                    setTextPlacement((p) => ({ ...p, align }));
+                    if (customText.trim()) setSelectedElement("text");
+                  }}
+                  title={`Alinhar à ${label.toLowerCase()}`}
+                  aria-label={`Alinhar texto à ${label.toLowerCase()}`}
+                >
+                  <span aria-hidden="true">{icon}</span>
+                  <small>{label}</small>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <label className="range-field">
+            <span><b>Largura da caixa de texto</b><strong>{Math.round(textPlacement.width * 100)}%</strong></span>
+            <input
+              type="range"
+              min="15"
+              max="90"
+              step="1"
+              value={textPlacement.width * 100}
+              onChange={(e) => setTextPlacement((p) => ({
+                ...p,
+                width: Number(e.target.value) / 100,
+                x: clamp(p.x, 0, 1 - Number(e.target.value) / 100),
+              }))}
+            />
           </label>
 
           <label className="range-field">
@@ -833,7 +1005,7 @@ export default function LabelEditor() {
 
           <div className="hint">
             <strong>Posicionamento visual</strong>
-            <p>Arraste a logo e o texto diretamente sobre a etiqueta. A prévia mostra onde eles serão aplicados no PDF final.</p>
+            <p>Clique na logo ou no texto para selecionar. O item selecionado pode ser arrastado, editado e excluído pela lixeira ou pela tecla Delete.</p>
           </div>
 
           <div className="two-buttons">
@@ -872,7 +1044,7 @@ export default function LabelEditor() {
 
       <footer>
         <span>Compatível com múltiplos PDFs e PDFs multipágina.</span>
-        <span>PNG/JPG · texto com fontes e rotação · Vercel · sem banco de dados</span>
+        <span>Seleção e exclusão de elementos · editor de texto · Vercel · sem banco de dados</span>
       </footer>
     </main>
   );
