@@ -1,4 +1,4 @@
-# Auditoria de bugs — V6
+# Auditoria de bugs — V6.1
 
 ## Causa principal encontrada
 
@@ -19,3 +19,12 @@ O iframe invisível foi removido. O PDF final é aberto numa aba real para que o
 ## Teste geométrico
 
 `scripts/test-geometry.mjs` cobre matrizes equivalentes a páginas rotacionadas, deslocadas e escaladas e verifica que os cantos reconstruídos retornam exatamente à posição visual esperada.
+
+## 7. Build Vercel / PDF.js 6.x
+
+Corrigidos os erros de tipagem reportados pela Vercel:
+
+- `TS2345`: adicionado `canvas` aos parâmetros de `pdfPage.render()`.
+- `TS2339`: substituído `source.destroy()` por `loadingTask.destroy()`.
+
+Isso mantém o modo de compatibilidade máxima sem quebrar o type-check do Next.js.

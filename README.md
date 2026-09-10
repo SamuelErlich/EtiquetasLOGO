@@ -2,9 +2,9 @@
 
 Aplicação web para personalizar etiquetas de e-commerce diretamente no navegador.
 
-## Versão 0.6.0 — correção do fluxo de impressão
+## Versão 0.6.1 — correção de build na Vercel + fluxo de impressão
 
-O selo visível no topo deve mostrar **V6 · impressão corrigida**.
+O selo visível no topo deve mostrar **V6.1 · build corrigido**.
 
 ### Correções principais
 
@@ -64,17 +64,17 @@ Abra `http://localhost:3000`.
 
 ## Publicar na Vercel
 
-1. Extraia o ZIP V6.
+1. Extraia o ZIP V6.1.
 2. Substitua **os arquivos da raiz** do repositório: `app/`, `components/`, `scripts/`, `package.json`, etc.
 3. Faça commit e push para a branch conectada à Vercel.
 4. Confirme que o novo deployment usa o hash desse novo commit.
-5. Abra o site e verifique o selo **V6 · impressão corrigida**.
+5. Abra o site e verifique o selo **V6.1 · build corrigido**.
 
 Exemplo:
 
 ```bash
 git add -A
-git commit -m "Corrige impressão de etiquetas V6"
+git commit -m "Corrige build e impressão de etiquetas V6.1"
 git push
 ```
 
@@ -83,3 +83,12 @@ git push
 O modo de compatibilidade máxima é recomendado para PDFs provenientes de plataformas diferentes. Ele achata o resultado a **203 DPI**, resolução nativa muito comum em impressoras térmicas de etiquetas, fazendo com que logo, texto e etiqueta original cheguem ao driver como uma única imagem por página.
 
 Se quiser preservar o PDF totalmente vetorial, desative **Compatibilidade máxima de impressão**. A geometria corrigida continua sendo usada no modo vetorial.
+
+### Correção V6.1 — PDF.js 6.x
+
+A V6.1 corrige duas incompatibilidades de TypeScript encontradas no build da Vercel com `pdfjs-dist 6.3.289`:
+
+- `PDFPageProxy.render()` agora recebe explicitamente o elemento `canvas`, além do contexto 2D.
+- a liberação do documento usa `loadingTask.destroy()`, que é o método exposto por `PDFDocumentLoadingTask`.
+
+Essas mudanças eliminam os erros TS2345 e TS2339 do build da V6.

@@ -759,6 +759,7 @@ export default function LabelEditor() {
         context.fillRect(0, 0, canvas.width, canvas.height);
 
         await pdfPage.render({
+          canvas,
           canvasContext: context,
           viewport: renderViewport,
           intent: "print",
@@ -786,7 +787,9 @@ export default function LabelEditor() {
         pdfPage.cleanup();
       }
     } finally {
-      await source.destroy();
+      // In PDF.js 6.x, destroy() belongs to PDFDocumentLoadingTask,
+      // not to the PDFDocumentProxy returned by loadingTask.promise.
+      await loadingTask.destroy();
     }
 
     return flattened.save({ useObjectStreams: false, addDefaultPage: false });
@@ -898,7 +901,7 @@ export default function LabelEditor() {
           </p>
         </div>
         <div className="topbar-actions">
-          <div className="version-badge">V6 · impressão corrigida</div>
+          <div className="version-badge">V6.1 · build corrigido</div>
           <div className="privacy-badge">Processamento local no navegador</div>
         </div>
       </header>
