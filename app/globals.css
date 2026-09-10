@@ -547,3 +547,35 @@ kbd {
 @media (max-width: 640px) {
   .topbar-actions { align-items: flex-start; width: 100%; }
 }
+
+/* Version 6: compatibilidade de impressão */
+.compatibility-toggle {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 10px;
+  align-items: start;
+  margin-top: 14px;
+  padding: 13px;
+  border: 1px solid #c7d7fe;
+  border-radius: 12px;
+  background: #f5f8ff;
+  cursor: pointer;
+}
+.compatibility-toggle input {
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  accent-color: #2563eb;
+}
+.compatibility-toggle strong {
+  display: block;
+  font-size: 13px;
+  color: #1e3a8a;
+}
+.compatibility-toggle small {
+  display: block;
+  margin-top: 4px;
+  color: #475569;
+  font-size: 11px;
+  line-height: 1.45;
+}

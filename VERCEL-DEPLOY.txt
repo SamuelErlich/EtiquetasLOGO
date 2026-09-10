@@ -1,23 +1,28 @@
-ETIQUETA LOGO V5 - DEPLOY CORRETO NA VERCEL
+ETIQUETA LOGO V6 - DEPLOY CORRETO NA VERCEL
 
-1. Este ZIP foi criado com app/, components/, package.json etc. diretamente na raiz.
-2. No seu repositório GitHub, substitua os arquivos antigos por estes arquivos.
-3. Confira que components/LabelEditor.tsx no GitHub contém o texto:
-   V5 · seleção + editor de texto
-4. Faça Commit e Push para a branch conectada à Vercel (normalmente main).
-5. Na Vercel, abra Deployments e confirme que o novo deploy mostra o hash do NOVO commit.
-6. Abra o site. No topo deve aparecer o selo preto:
-   V5 · seleção + editor de texto
+1. Extraia o ZIP e copie app/, components/, scripts/, package.json etc. para a RAIZ do repositório.
+2. Substitua os arquivos antigos.
+3. No GitHub, confirme que components/LabelEditor.tsx contém:
+   V6 · impressão corrigida
+4. Faça um NOVO commit e push para a branch conectada à Vercel.
+5. Na Vercel, confirme que o deployment usa o hash do novo commit.
+6. No site publicado, confirme o selo:
+   V6 · impressão corrigida
 
 IMPORTANTE:
-Clicar apenas em "Redeploy" em um deployment antigo recompila o mesmo commit. Isso não envia arquivos novos.
+- Não use somente "Redeploy" em um deployment antigo.
+- O modo "Compatibilidade máxima de impressão" vem ativado por padrão.
+- O botão de impressão abre o PDF final real em nova aba. Confira a arte e use Ctrl+P ou o botão do visualizador.
 
-Recursos desta versão:
-- selecionar logo ou texto clicando no elemento
-- excluir selecionado por Delete ou Backspace
-- botão de lixeira no elemento e no painel
-- alinhamento de texto: esquerda / centro / direita
-- largura ajustável da caixa de texto
-- girar texto e logo
-- botão grande "Carregar outro PDF"
-- aplicar padronização em todas as etiquetas
+CORREÇÕES V6:
+- CropBox e MediaBox diferentes
+- origem X/Y deslocada
+- páginas 90/180/270 graus
+- UserUnit/escala não padrão
+- formatos de página mistos
+- correspondência preview -> PDF final
+- fallback térmico achatado a 203 DPI
+- object streams desativados para compatibilidade
+- impressão sem iframe invisível
+- cancelamento de renderização concorrente
+- liberação do PDF anterior ao trocar arquivo

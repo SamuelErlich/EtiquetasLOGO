@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { degrees, PDFDocument, StandardFonts, type PDFImage } from "pdf-lib";
+import { degrees, PDFDocument, StandardFonts, type PDFFont, type PDFImage, type PDFPage } from "pdf-lib";
 
 type LogoPlacement = {
   x: number;
@@ -50,11 +50,23 @@ type PdfMetrics = {
   pageCount: number;
 };
 
+type ViewportLike = {
+  width: number;
+  height: number;
+  transform: [number, number, number, number, number, number] | number[];
+};
+
+type PdfPoint = {
+  x: number;
+  y: number;
+};
+
 type SavedConfig = {
   logoPlacement: LogoPlacement;
   textPlacement: TextPlacement;
   customText: string;
   applyToAll: boolean;
+  compatibilityMode?: boolean;
 };
 
 const DEFAULT_LOGO_PLACEMENT: LogoPlacement = {
@@ -97,7 +109,7 @@ const FONT_OPTIONS: Array<{
   { id: "courierBoldOblique", label: "Courier Negrito Itálico", pdf: StandardFonts.CourierBoldOblique, cssFamily: '"Courier New", Courier, monospace', cssWeight: 700, cssStyle: "italic" },
 ];
 
-const STORAGE_KEY = "etiqueta-logo-config-v4";
+const STORAGE_KEY = "etiqueta-logo-config-v6";
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
@@ -106,6 +118,50 @@ function clamp(value: number, min: number, max: number) {
 function normalizeRotation(value: number) {
   const normalized = ((value + 180) % 360 + 360) % 360 - 180;
   return normalized === -180 && value > 0 ? 180 : normalized;
+}
+
+function viewportPointToPdf(viewport: ViewportLike, x: number, y: number): PdfPoint {
+  const [a, b, c, d, e, f] = viewport.transform;
+  const determinant = a * d - b * c;
+
+  if (Math.abs(determinant) < 1e-10) {
+    throw new Error("Não foi possível interpretar a geometria desta página PDF.");
+  }
+
+  const dx = x - e;
+  const dy = y - f;
+
+  return {
+    x: (d * dx - c * dy) / determinant,
+    y: (-b * dx + a * dy) / determinant,
+  };
+}
+
+function distanceBetween(a: PdfPoint, b: PdfPoint) {
+  return Math.hypot(b.x - a.x, b.y - a.y);
+}
+
+function angleBetween(a: PdfPoint, b: PdfPoint) {
+  return (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
+}
+
+function rotateScreenVector(x: number, y: number, rotation: number) {
+  const radians = (rotation * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  return {
+    x: x * cos - y * sin,
+    y: x * sin + y * cos,
+  };
+}
+
+function rotateScreenPoint(
+  point: { x: number; y: number },
+  center: { x: number; y: number },
+  rotation: number,
+) {
+  const local = rotateScreenVector(point.x - center.x, point.y - center.y, rotation);
+  return { x: center.x + local.x, y: center.y + local.y };
 }
 
 function formatMb(bytes: number) {
@@ -125,6 +181,7 @@ export default function LabelEditor() {
   const [textPlacement, setTextPlacement] = useState<TextPlacement>(DEFAULT_TEXT_PLACEMENT);
   const [customText, setCustomText] = useState("");
   const [applyToAll, setApplyToAll] = useState(true);
+  const [compatibilityMode, setCompatibilityMode] = useState(true);
   const [metrics, setMetrics] = useState<PdfMetrics | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
   const [previewScale, setPreviewScale] = useState(1);
@@ -137,6 +194,8 @@ export default function LabelEditor() {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const pdfBytesRef = useRef<ArrayBuffer | null>(null);
   const pdfJsDocRef = useRef<any>(null);
+  const renderTaskRef = useRef<any>(null);
+  const printUrlRef = useRef<string | null>(null);
   const dragRef = useRef<null | {
     mode: "logo-move" | "logo-resize" | "text-move";
     startX: number;
@@ -148,6 +207,8 @@ export default function LabelEditor() {
   useEffect(() => {
     const raw =
       localStorage.getItem(STORAGE_KEY) ??
+      localStorage.getItem("etiqueta-logo-config-v5") ??
+      localStorage.getItem("etiqueta-logo-config-v4") ??
       localStorage.getItem("etiqueta-logo-config-v3") ??
       localStorage.getItem("etiqueta-logo-config-v2");
     if (!raw) return;
@@ -168,6 +229,7 @@ export default function LabelEditor() {
       }
       if (typeof saved.customText === "string") setCustomText(saved.customText);
       if (typeof saved.applyToAll === "boolean") setApplyToAll(saved.applyToAll);
+      if (typeof saved.compatibilityMode === "boolean") setCompatibilityMode(saved.compatibilityMode);
     } catch {
       // Ignora configuração local inválida.
     }
@@ -178,6 +240,18 @@ export default function LabelEditor() {
       if (logoUrl) URL.revokeObjectURL(logoUrl);
     };
   }, [logoUrl]);
+
+  useEffect(() => {
+    return () => {
+      try {
+        renderTaskRef.current?.cancel?.();
+      } catch {
+        // Nada a fazer no unmount.
+      }
+      pdfJsDocRef.current?.destroy?.();
+      if (printUrlRef.current) URL.revokeObjectURL(printUrlRef.current);
+    };
+  }, []);
 
   async function mergePdfFiles(files: File[]) {
     if (files.length === 1) return files[0].arrayBuffer();
@@ -208,6 +282,12 @@ export default function LabelEditor() {
       pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
 
       const doc = await pdfjs.getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise;
+      try {
+        renderTaskRef.current?.cancel?.();
+        await pdfJsDocRef.current?.destroy?.();
+      } catch {
+        // O documento anterior pode já estar encerrado.
+      }
       pdfJsDocRef.current = doc;
       const firstPage = await doc.getPage(1);
       const viewport = firstPage.getViewport({ scale: 1 });
@@ -244,6 +324,11 @@ export default function LabelEditor() {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
 
     setPreviewScale(scale);
+    setMetrics((current) =>
+      current
+        ? { ...current, width: base.width, height: base.height }
+        : { width: base.width, height: base.height, pageCount: doc.numPages },
+    );
     canvas.width = Math.floor(viewport.width * dpr);
     canvas.height = Math.floor(viewport.height * dpr);
     canvas.style.width = `${viewport.width}px`;
@@ -254,7 +339,22 @@ export default function LabelEditor() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, viewport.width, viewport.height);
 
-    await pdfPage.render({ canvasContext: ctx, viewport }).promise;
+    try {
+      renderTaskRef.current?.cancel?.();
+    } catch {
+      // A tarefa anterior pode já ter terminado.
+    }
+
+    const renderTask = pdfPage.render({ canvasContext: ctx, viewport });
+    renderTaskRef.current = renderTask;
+    try {
+      await renderTask.promise;
+    } catch (err) {
+      const name = err instanceof Error ? err.name : "";
+      if (name !== "RenderingCancelledException") throw err;
+    } finally {
+      if (renderTaskRef.current === renderTask) renderTaskRef.current = null;
+    }
   }
 
   useEffect(() => {
@@ -271,7 +371,8 @@ export default function LabelEditor() {
   }, [pageNumber]);
 
   function onPdfChange(event: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(event.target.files ?? []);
+    const files = Array.from(event.target.files ?? []) as File[];
+    event.target.value = "";
     if (!files.length) return;
 
     const invalid = files.find((file) => file.type !== "application/pdf");
@@ -285,6 +386,7 @@ export default function LabelEditor() {
 
   function onLogoChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
+    event.target.value = "";
     if (!file) return;
     if (!["image/png", "image/jpeg"].includes(file.type)) {
       setError("A logo precisa estar em PNG ou JPG.");
@@ -426,6 +528,7 @@ export default function LabelEditor() {
       textPlacement,
       customText,
       applyToAll,
+      compatibilityMode,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
     setMessage("Configuração salva neste navegador.");
@@ -436,17 +539,152 @@ export default function LabelEditor() {
     setTextPlacement(DEFAULT_TEXT_PLACEMENT);
     setCustomText("");
     setApplyToAll(true);
+    setCompatibilityMode(true);
     setSelectedElement(null);
     setMessage("Configuração restaurada.");
   }
 
-  function getTargetPages(doc: PDFDocument) {
-    if (applyToAll) return doc.getPages();
-    const page = doc.getPage(pageNumber - 1);
-    return [page];
+  function getTargetPageIndices(doc: PDFDocument) {
+    if (applyToAll) return doc.getPageIndices();
+    return [pageNumber - 1];
   }
 
-  async function buildPdf() {
+  async function getGeometryViewport(pageIndex: number): Promise<ViewportLike> {
+    const sourceDoc = pdfJsDocRef.current;
+    if (!sourceDoc) {
+      throw new Error("A pré-visualização do PDF não está disponível. Recarregue o arquivo.");
+    }
+
+    const pdfJsPage = await sourceDoc.getPage(pageIndex + 1);
+    return pdfJsPage.getViewport({ scale: 1 }) as ViewportLike;
+  }
+
+  function drawLogoWithViewportGeometry(
+    page: PDFPage,
+    logoImage: PDFImage,
+    viewport: ViewportLike,
+  ) {
+    const visibleWidth = logoPlacement.width * viewport.width;
+    const visibleHeight = visibleWidth / logoAspect;
+    const left = logoPlacement.x * viewport.width;
+    const top = logoPlacement.y * viewport.height;
+    const center = {
+      x: left + visibleWidth / 2,
+      y: top + visibleHeight / 2,
+    };
+
+    // Calcula os cantos como eles aparecem exatamente no canvas do PDF.js.
+    // Depois converte esses pontos de volta ao espaço PDF real da página.
+    // Isso respeita CropBox, MediaBox deslocada, UserUnit e páginas /Rotate 90/180/270.
+    const bottomLeftVisible = rotateScreenPoint(
+      { x: left, y: top + visibleHeight },
+      center,
+      logoPlacement.rotation,
+    );
+    const bottomRightVisible = rotateScreenPoint(
+      { x: left + visibleWidth, y: top + visibleHeight },
+      center,
+      logoPlacement.rotation,
+    );
+    const topLeftVisible = rotateScreenPoint(
+      { x: left, y: top },
+      center,
+      logoPlacement.rotation,
+    );
+
+    const bottomLeft = viewportPointToPdf(viewport, bottomLeftVisible.x, bottomLeftVisible.y);
+    const bottomRight = viewportPointToPdf(viewport, bottomRightVisible.x, bottomRightVisible.y);
+    const topLeft = viewportPointToPdf(viewport, topLeftVisible.x, topLeftVisible.y);
+
+    const width = distanceBetween(bottomLeft, bottomRight);
+    const height = distanceBetween(bottomLeft, topLeft);
+    const rotation = angleBetween(bottomLeft, bottomRight);
+
+    const options: Parameters<typeof page.drawImage>[1] = {
+      x: bottomLeft.x,
+      y: bottomLeft.y,
+      width,
+      height,
+      rotate: degrees(rotation),
+    };
+
+    // Alguns drivers térmicos antigos têm problemas com ExtGState/transparência.
+    // Em 100%, não adicionamos opacity ao PDF.
+    if (logoPlacement.opacity < 0.999) {
+      options.opacity = logoPlacement.opacity;
+    }
+
+    page.drawImage(logoImage, options);
+  }
+
+  function drawTextWithViewportGeometry(
+    page: PDFPage,
+    font: PDFFont,
+    viewport: ViewportLike,
+  ) {
+    const text = customText.trimEnd();
+    if (!text) return;
+
+    const origin = viewportPointToPdf(viewport, 0, 0);
+    const oneVisibleUnitRight = viewportPointToPdf(viewport, 1, 0);
+    const pdfUnitsPerVisibleUnit = distanceBetween(origin, oneVisibleUnitRight);
+    const fontSizePdf = textPlacement.fontSize * pdfUnitsPerVisibleUnit;
+    const lineHeightVisible = textPlacement.fontSize * 1.2;
+    const boxWidthVisible = textPlacement.width * viewport.width;
+    const pivotVisible = {
+      x: textPlacement.x * viewport.width,
+      y: textPlacement.y * viewport.height,
+    };
+    const baselineDirectionVisible = rotateScreenVector(1, 0, textPlacement.rotation);
+
+    const lines = text.replace(/\r/g, "").split("\n");
+
+    lines.forEach((line, index) => {
+      if (!line) return;
+
+      const lineWidthPdf = font.widthOfTextAtSize(line, fontSizePdf);
+      const lineWidthVisible = lineWidthPdf / pdfUnitsPerVisibleUnit;
+      const alignmentOffsetVisible =
+        textPlacement.align === "center"
+          ? Math.max(0, (boxWidthVisible - lineWidthVisible) / 2)
+          : textPlacement.align === "right"
+            ? Math.max(0, boxWidthVisible - lineWidthVisible)
+            : 0;
+
+      const baselineOffsetVisible = textPlacement.fontSize + index * lineHeightVisible;
+      const rotatedLocal = rotateScreenVector(
+        alignmentOffsetVisible,
+        baselineOffsetVisible,
+        textPlacement.rotation,
+      );
+      const baselineVisible = {
+        x: pivotVisible.x + rotatedLocal.x,
+        y: pivotVisible.y + rotatedLocal.y,
+      };
+      const baselineVisibleEnd = {
+        x: baselineVisible.x + baselineDirectionVisible.x,
+        y: baselineVisible.y + baselineDirectionVisible.y,
+      };
+
+      const baselinePdf = viewportPointToPdf(viewport, baselineVisible.x, baselineVisible.y);
+      const baselinePdfEnd = viewportPointToPdf(
+        viewport,
+        baselineVisibleEnd.x,
+        baselineVisibleEnd.y,
+      );
+      const textRotationPdf = angleBetween(baselinePdf, baselinePdfEnd);
+
+      page.drawText(line, {
+        x: baselinePdf.x,
+        y: baselinePdf.y,
+        size: fontSizePdf,
+        font,
+        rotate: degrees(textRotationPdf),
+      });
+    });
+  }
+
+  async function buildVectorPdf() {
     if (!pdfBytesRef.current) {
       throw new Error("Envie pelo menos um PDF antes de gerar.");
     }
@@ -459,7 +697,7 @@ export default function LabelEditor() {
 
     const sourceBytes = pdfBytesRef.current.slice(0);
     const doc = await PDFDocument.load(sourceBytes);
-    const targetPages = getTargetPages(doc);
+    const targetPageIndices = getTargetPageIndices(doc);
 
     let logoImage: PDFImage | null = null;
     if (logoFile) {
@@ -471,78 +709,104 @@ export default function LabelEditor() {
 
     const font = hasText ? await doc.embedFont(selectedFont.pdf) : null;
 
-    for (const page of targetPages) {
-      const pageWidth = page.getWidth();
-      const pageHeight = page.getHeight();
+    for (const pageIndex of targetPageIndices) {
+      const page = doc.getPage(pageIndex);
+      const viewport = await getGeometryViewport(pageIndex);
 
       if (logoImage) {
-        const width = logoPlacement.width * pageWidth;
-        const height = width / logoAspect;
-        const x0 = logoPlacement.x * pageWidth;
-        const y0 = pageHeight - logoPlacement.y * pageHeight - height;
-        const angle = (logoPlacement.rotation * Math.PI) / 180;
-
-        // Ajusta a origem para que a rotação aconteça visualmente pelo centro da logo,
-        // igual à pré-visualização CSS.
-        const centerX = x0 + width / 2;
-        const centerY = y0 + height / 2;
-        const rotatedHalfX = Math.cos(angle) * (width / 2) - Math.sin(angle) * (height / 2);
-        const rotatedHalfY = Math.sin(angle) * (width / 2) + Math.cos(angle) * (height / 2);
-        const drawX = centerX - rotatedHalfX;
-        const drawY = centerY - rotatedHalfY;
-
-        page.drawImage(logoImage, {
-          x: drawX,
-          y: drawY,
-          width,
-          height,
-          opacity: logoPlacement.opacity,
-          rotate: degrees(logoPlacement.rotation),
-        });
+        drawLogoWithViewportGeometry(page, logoImage, viewport);
       }
 
       if (font && customText.trim()) {
-        const fontSize = textPlacement.fontSize;
-        const lines = customText.replace(/\r/g, "").split("\n");
-        const lineHeight = fontSize * 1.2;
-        const pivotX = textPlacement.x * pageWidth;
-        const pivotY = pageHeight - textPlacement.y * pageHeight;
-        const pdfRotation = -textPlacement.rotation;
-        const angle = (pdfRotation * Math.PI) / 180;
-
-        const boxWidth = textPlacement.width * pageWidth;
-
-        lines.forEach((line, index) => {
-          if (!line) return;
-
-          const lineWidth = font.widthOfTextAtSize(line, fontSize);
-          const alignmentOffset =
-            textPlacement.align === "center"
-              ? Math.max(0, (boxWidth - lineWidth) / 2)
-              : textPlacement.align === "right"
-                ? Math.max(0, boxWidth - lineWidth)
-                : 0;
-
-          // A rotação usa o canto superior esquerdo da caixa de texto como pivô,
-          // exatamente como na pré-visualização.
-          const baselineOffset = fontSize + index * lineHeight;
-          const localX = alignmentOffset;
-          const localY = -baselineOffset;
-          const rotatedX = localX * Math.cos(angle) - localY * Math.sin(angle);
-          const rotatedY = localX * Math.sin(angle) + localY * Math.cos(angle);
-
-          page.drawText(line, {
-            x: pivotX + rotatedX,
-            y: pivotY + rotatedY,
-            size: fontSize,
-            font,
-            rotate: degrees(pdfRotation),
-          });
-        });
+        drawTextWithViewportGeometry(page, font, viewport);
       }
     }
 
-    return doc.save();
+    // Desativa object streams para ampliar a compatibilidade com visualizadores
+    // e drivers térmicos antigos/usados por alguns fluxos de e-commerce.
+    return doc.save({ useObjectStreams: false, addDefaultPage: false });
+  }
+
+  async function flattenPdfForMaximumCompatibility(bytes: Uint8Array) {
+    const pdfjs = await import("pdfjs-dist");
+    pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+
+    const loadingTask = pdfjs.getDocument({ data: new Uint8Array(bytes) });
+    const source = await loadingTask.promise;
+    const flattened = await PDFDocument.create();
+
+    // 203 DPI é a resolução nativa mais comum em impressoras térmicas 4x6.
+    // O conteúdo é achatado exatamente como o PDF.js o renderiza, eliminando
+    // problemas de camadas, CropBox, rotação e transparência no driver.
+    const dpi = 203;
+    const renderScale = dpi / 72;
+
+    try {
+      for (let index = 1; index <= source.numPages; index += 1) {
+        if (index === 1 || index === source.numPages || index % 10 === 0) {
+          setMessage(`Preparando impressão compatível: ${index}/${source.numPages} etiquetas...`);
+        }
+        const pdfPage = await source.getPage(index);
+        const finalViewport = pdfPage.getViewport({ scale: 1 });
+        const renderViewport = pdfPage.getViewport({ scale: renderScale });
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.ceil(renderViewport.width));
+        canvas.height = Math.max(1, Math.ceil(renderViewport.height));
+
+        const context = canvas.getContext("2d", { alpha: false });
+        if (!context) throw new Error("Não foi possível preparar a impressão desta etiqueta.");
+        context.fillStyle = "#ffffff";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+
+        await pdfPage.render({
+          canvasContext: context,
+          viewport: renderViewport,
+          intent: "print",
+        }).promise;
+
+        const pngBlob = await new Promise<Blob>((resolve, reject) => {
+          canvas.toBlob((blob) => {
+            if (blob) resolve(blob);
+            else reject(new Error("Não foi possível rasterizar uma das etiquetas."));
+          }, "image/png");
+        });
+
+        const png = await flattened.embedPng(await pngBlob.arrayBuffer());
+        const outputPage = flattened.addPage([finalViewport.width, finalViewport.height]);
+        outputPage.drawImage(png, {
+          x: 0,
+          y: 0,
+          width: finalViewport.width,
+          height: finalViewport.height,
+        });
+
+        // Libera memória da imagem de renderização antes de seguir para a próxima página.
+        canvas.width = 1;
+        canvas.height = 1;
+        pdfPage.cleanup();
+      }
+    } finally {
+      await source.destroy();
+    }
+
+    return flattened.save({ useObjectStreams: false, addDefaultPage: false });
+  }
+
+  async function buildPdf() {
+    const vectorBytes = await buildVectorPdf();
+    return compatibilityMode
+      ? flattenPdfForMaximumCompatibility(vectorBytes)
+      : vectorBytes;
+  }
+
+  function makeOutputBlob(bytes: Uint8Array) {
+    return new Blob([bytes as BlobPart], { type: "application/pdf" });
+  }
+
+  function outputFileName() {
+    return pdfFiles.length === 1
+      ? `${fileBaseName(pdfFiles[0].name)}-padronizado.pdf`
+      : "etiquetas-padronizadas.pdf";
   }
 
   async function downloadPdf() {
@@ -550,21 +814,21 @@ export default function LabelEditor() {
     setError("");
     try {
       const bytes = await buildPdf();
-      const blob = new Blob([bytes as BlobPart], { type: "application/pdf" });
+      const blob = makeOutputBlob(bytes);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = pdfFiles.length === 1
-        ? `${fileBaseName(pdfFiles[0].name)}-padronizado.pdf`
-        : "etiquetas-padronizadas.pdf";
+      a.download = outputFileName();
       document.body.appendChild(a);
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       setMessage(
-        applyToAll
-          ? "PDF final gerado com a mesma configuração em todas as etiquetas."
-          : `PDF final gerado aplicando somente na etiqueta ${pageNumber}.`,
+        compatibilityMode
+          ? "PDF final gerado em modo de compatibilidade máxima para impressão térmica."
+          : applyToAll
+            ? "PDF final vetorial gerado com a mesma configuração em todas as etiquetas."
+            : `PDF final vetorial gerado aplicando somente na etiqueta ${pageNumber}.`,
       );
     } catch (err) {
       const detail = err instanceof Error ? err.message : "Erro ao gerar o PDF.";
@@ -579,32 +843,37 @@ export default function LabelEditor() {
   }
 
   async function printPdf() {
+    // Abre a aba imediatamente durante o clique para evitar bloqueadores de popup.
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) {
+      setError("O navegador bloqueou a janela de impressão. Permita pop-ups para este site e tente novamente.");
+      return;
+    }
+
+    printWindow.document.title = "Preparando etiquetas";
+    printWindow.document.body.innerHTML =
+      '<div style="font-family:Arial,sans-serif;padding:32px;color:#111827">Preparando o PDF final para impressão…</div>';
+
     setBusy(true);
     setError("");
     try {
       const bytes = await buildPdf();
-      const blob = new Blob([bytes as BlobPart], { type: "application/pdf" });
+      const blob = makeOutputBlob(bytes);
+
+      if (printUrlRef.current) URL.revokeObjectURL(printUrlRef.current);
       const url = URL.createObjectURL(blob);
-      const iframe = document.createElement("iframe");
-      iframe.style.position = "fixed";
-      iframe.style.width = "1px";
-      iframe.style.height = "1px";
-      iframe.style.opacity = "0";
-      iframe.style.pointerEvents = "none";
-      iframe.src = url;
-      document.body.appendChild(iframe);
-      iframe.onload = () => {
-        setTimeout(() => {
-          iframe.contentWindow?.focus();
-          iframe.contentWindow?.print();
-          setTimeout(() => {
-            iframe.remove();
-            URL.revokeObjectURL(url);
-          }, 30000);
-        }, 500);
-      };
-      setMessage("Abrindo a impressão do navegador...");
+      printUrlRef.current = url;
+
+      // Usar uma aba real é mais confiável do que imprimir um iframe invisível.
+      // O usuário vê exatamente o PDF que será enviado ao driver antes de confirmar.
+      printWindow.location.replace(url);
+      setMessage(
+        compatibilityMode
+          ? "PDF final aberto em modo compatibilidade. Confira a arte e use o botão de impressão do visualizador ou Ctrl+P."
+          : "PDF final aberto para impressão. Confira a arte e use o botão de impressão do visualizador ou Ctrl+P.",
+      );
     } catch (err) {
+      printWindow.close();
       const detail = err instanceof Error ? err.message : "Erro ao preparar a impressão.";
       if (/WinAnsi|encode/i.test(detail)) {
         setError("O texto contém um caractere não suportado. Remova emojis ou símbolos especiais e tente novamente.");
@@ -629,7 +898,7 @@ export default function LabelEditor() {
           </p>
         </div>
         <div className="topbar-actions">
-          <div className="version-badge">V5 · seleção + editor de texto</div>
+          <div className="version-badge">V6 · impressão corrigida</div>
           <div className="privacy-badge">Processamento local no navegador</div>
         </div>
       </header>
@@ -1026,6 +1295,18 @@ export default function LabelEditor() {
             </p>
           </div>
 
+          <label className="compatibility-toggle">
+            <input
+              type="checkbox"
+              checked={compatibilityMode}
+              onChange={(e) => setCompatibilityMode(e.target.checked)}
+            />
+            <span>
+              <strong>Compatibilidade máxima de impressão</strong>
+              <small>Recomendado. Achata cada etiqueta a 203 DPI para impedir que alguns drivers térmicos ignorem logo ou texto.</small>
+            </span>
+          </label>
+
           <div className="divider" />
 
           <div className="card-heading compact">
@@ -1036,7 +1317,7 @@ export default function LabelEditor() {
             {busy ? "Processando..." : "Gerar PDF padronizado"}
           </button>
           <button type="button" className="print" onClick={printPdf} disabled={busy || !canGenerate}>
-            Imprimir etiquetas
+            Abrir PDF final e imprimir
           </button>
 
           {(message || error) && (
@@ -1047,7 +1328,7 @@ export default function LabelEditor() {
 
       <footer>
         <span>Compatível com múltiplos PDFs e PDFs multipágina.</span>
-        <span>Seleção e exclusão de elementos · editor de texto · Vercel · sem banco de dados</span>
+        <span>Geometria PDF corrigida · modo térmico 203 DPI · Vercel · sem banco de dados</span>
       </footer>
     </main>
   );
