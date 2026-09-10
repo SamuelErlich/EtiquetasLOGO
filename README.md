@@ -1,24 +1,26 @@
-# Logo nas Etiquetas — MVP Vercel
+# Logo nas Etiquetas — Next.js + Vercel
 
-Aplicação web para adicionar uma logo em etiquetas de e-commerce em PDF.
+Aplicação web para personalizar etiquetas de e-commerce diretamente no navegador.
 
-## O que já funciona
+## Recursos
 
-- Upload de PDF multipágina.
-- Pré-visualização das páginas.
-- Upload de logo PNG ou JPG.
-- Arrastar a logo livremente sobre a etiqueta.
-- Redimensionar pelo canto inferior direito.
-- Ajustar X, Y, tamanho e opacidade.
-- Salvar a posição no navegador (LocalStorage).
-- Aplicar a mesma posição proporcional em todas as páginas.
-- Gerar e baixar um novo PDF mantendo o PDF original em formato vetorial.
-- Abrir a impressão pelo navegador.
-- Processamento do arquivo no navegador; não há banco de dados no MVP.
+- Upload de um ou vários PDFs ao mesmo tempo.
+- PDFs multipágina.
+- União automática dos PDFs selecionados em uma única sequência de etiquetas.
+- Upload de logo PNG/JPG.
+- Arrastar e redimensionar a logo visualmente.
+- Girar a logo entre -180° e 180° e atalhos de 90°.
+- Ajustar opacidade.
+- Inserir texto personalizado e arrastá-lo na prévia.
+- Ajustar tamanho do texto.
+- Opção **Aplicar em todas as etiquetas** para padronizar todas as páginas carregadas.
+- Modo individual para aplicar somente na página que está sendo visualizada.
+- Salvar configuração no navegador.
+- Gerar PDF final.
+- Imprimir pelo navegador.
+- Processamento local: os PDFs não precisam ser enviados para um servidor.
 
 ## Rodar localmente
-
-Requer Node.js 20.9 ou superior.
 
 ```bash
 npm install
@@ -29,23 +31,20 @@ Abra `http://localhost:3000`.
 
 ## Publicar na Vercel
 
-1. Crie um repositório no GitHub e envie estes arquivos.
-2. Entre na Vercel e selecione **Add New > Project**.
+1. Suba este projeto para um repositório no GitHub.
+2. Na Vercel, clique em **Add New → Project**.
 3. Importe o repositório.
-4. Framework: **Next.js** (detectado automaticamente).
+4. A Vercel detectará Next.js automaticamente.
 5. Clique em **Deploy**.
 
-O script `postinstall` copia automaticamente o worker do PDF.js para a pasta `public` durante o deploy.
+Também pode usar a CLI:
+
+```bash
+npm install
+npm run build
+npx vercel --prod
+```
 
 ## Observação sobre impressão
 
-Navegadores não permitem impressão silenciosa universal por segurança. O botão **Imprimir etiquetas** tenta abrir a caixa de impressão do navegador. Configure sua impressora térmica (ex.: 100 x 150 mm / 4x6) no sistema operacional e use escala 100% / margens mínimas ou nenhuma.
-
-## Próximas melhorias recomendadas
-
-- Presets Shopee / Mercado Livre / TikTok Shop.
-- Múltiplas logos salvas.
-- Zona de segurança para códigos de barras e QR Codes.
-- Rotação da logo.
-- Modo lote com vários PDFs ao mesmo tempo.
-- Detecção automática do tamanho físico da etiqueta em mm.
+A impressão usa a janela padrão do navegador. Para etiquetas térmicas 100×150 mm, configure o tamanho de papel correto no driver da impressora e use escala 100%/tamanho real quando necessário.

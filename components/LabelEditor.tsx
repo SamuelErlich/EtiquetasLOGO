@@ -1,13 +1,27 @@
 "use client";
 
-import { ChangeEvent, PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
-import { PDFDocument } from "pdf-lib";
+import {
+  ChangeEvent,
+  PointerEvent as ReactPointerEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { degrees, PDFDocument, StandardFonts, type PDFImage } from "pdf-lib";
 
-type Placement = {
+type LogoPlacement = {
   x: number;
   y: number;
   width: number;
   opacity: number;
+  rotation: number;
+};
+
+type TextPlacement = {
+  x: number;
+  y: number;
+  fontSize: number;
 };
 
 type PdfMetrics = {
@@ -16,33 +30,60 @@ type PdfMetrics = {
   pageCount: number;
 };
 
-const DEFAULT_PLACEMENT: Placement = {
+type SavedConfig = {
+  logoPlacement: LogoPlacement;
+  textPlacement: TextPlacement;
+  customText: string;
+  applyToAll: boolean;
+};
+
+const DEFAULT_LOGO_PLACEMENT: LogoPlacement = {
   x: 0.64,
   y: 0.78,
   width: 0.26,
   opacity: 1,
+  rotation: 0,
 };
 
-const STORAGE_KEY = "etiqueta-logo-placement-v1";
+const DEFAULT_TEXT_PLACEMENT: TextPlacement = {
+  x: 0.08,
+  y: 0.08,
+  fontSize: 16,
+};
+
+const STORAGE_KEY = "etiqueta-logo-config-v2";
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
+}
+
+function normalizeRotation(value: number) {
+  const normalized = ((value + 180) % 360 + 360) % 360 - 180;
+  return normalized === -180 && value > 0 ? 180 : normalized;
 }
 
 function formatMb(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
 }
 
+function fileBaseName(name: string) {
+  return name.replace(/\.pdf$/i, "");
+}
+
 export default function LabelEditor() {
-  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [pdfFiles, setPdfFiles] = useState<File[]>([]);
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoUrl, setLogoUrl] = useState<string>("");
   const [logoAspect, setLogoAspect] = useState(2.6);
-  const [placement, setPlacement] = useState<Placement>(DEFAULT_PLACEMENT);
+  const [logoPlacement, setLogoPlacement] = useState<LogoPlacement>(DEFAULT_LOGO_PLACEMENT);
+  const [textPlacement, setTextPlacement] = useState<TextPlacement>(DEFAULT_TEXT_PLACEMENT);
+  const [customText, setCustomText] = useState("");
+  const [applyToAll, setApplyToAll] = useState(true);
   const [metrics, setMetrics] = useState<PdfMetrics | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
+  const [previewScale, setPreviewScale] = useState(1);
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("Envie um PDF de etiquetas para começar.");
+  const [message, setMessage] = useState("Envie um ou mais PDFs de etiquetas para começar.");
   const [error, setError] = useState("");
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -50,27 +91,35 @@ export default function LabelEditor() {
   const pdfBytesRef = useRef<ArrayBuffer | null>(null);
   const pdfJsDocRef = useRef<any>(null);
   const dragRef = useRef<null | {
-    mode: "move" | "resize";
+    mode: "logo-move" | "logo-resize" | "text-move";
     startX: number;
     startY: number;
-    startPlacement: Placement;
+    startLogo: LogoPlacement;
+    startText: TextPlacement;
   }>(null);
 
   useEffect(() => {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return;
+
     try {
-      const saved = JSON.parse(raw) as Placement;
-      if (
-        typeof saved.x === "number" &&
-        typeof saved.y === "number" &&
-        typeof saved.width === "number" &&
-        typeof saved.opacity === "number"
-      ) {
-        setPlacement(saved);
+      const saved = JSON.parse(raw) as Partial<SavedConfig>;
+      if (saved.logoPlacement) {
+        setLogoPlacement({
+          ...DEFAULT_LOGO_PLACEMENT,
+          ...saved.logoPlacement,
+        });
       }
+      if (saved.textPlacement) {
+        setTextPlacement({
+          ...DEFAULT_TEXT_PLACEMENT,
+          ...saved.textPlacement,
+        });
+      }
+      if (typeof saved.customText === "string") setCustomText(saved.customText);
+      if (typeof saved.applyToAll === "boolean") setApplyToAll(saved.applyToAll);
     } catch {
-      // Ignore invalid local configuration.
+      // Ignora configuração local inválida.
     }
   }, []);
 
@@ -80,13 +129,29 @@ export default function LabelEditor() {
     };
   }, [logoUrl]);
 
-  async function loadPdf(file: File) {
+  async function mergePdfFiles(files: File[]) {
+    if (files.length === 1) return files[0].arrayBuffer();
+
+    const merged = await PDFDocument.create();
+    for (const file of files) {
+      const source = await PDFDocument.load(await file.arrayBuffer());
+      const pages = await merged.copyPages(source, source.getPageIndices());
+      pages.forEach((page) => merged.addPage(page));
+    }
+
+    const mergedBytes = await merged.save();
+    const copy = new Uint8Array(mergedBytes.byteLength);
+    copy.set(mergedBytes);
+    return copy.buffer;
+  }
+
+  async function loadPdfs(files: File[]) {
     setBusy(true);
     setError("");
-    setMessage("Carregando etiquetas...");
+    setMessage(files.length > 1 ? "Unindo e carregando etiquetas..." : "Carregando etiquetas...");
 
     try {
-      const bytes = await file.arrayBuffer();
+      const bytes = await mergePdfFiles(files);
       pdfBytesRef.current = bytes;
 
       const pdfjs = await import("pdfjs-dist");
@@ -97,16 +162,19 @@ export default function LabelEditor() {
       const firstPage = await doc.getPage(1);
       const viewport = firstPage.getViewport({ scale: 1 });
 
-      setPdfFile(file);
+      setPdfFiles(files);
       setMetrics({ width: viewport.width, height: viewport.height, pageCount: doc.numPages });
       setPageNumber(1);
-      setMessage(`${doc.numPages} etiqueta${doc.numPages === 1 ? "" : "s"} carregada${doc.numPages === 1 ? "" : "s"}.`);
+      setMessage(
+        `${doc.numPages} etiqueta${doc.numPages === 1 ? "" : "s"} carregada${doc.numPages === 1 ? "" : "s"}` +
+          `${files.length > 1 ? ` em ${files.length} PDFs` : ""}.`,
+      );
       requestAnimationFrame(() => renderPage(1, doc));
     } catch (err) {
       console.error(err);
-      setPdfFile(null);
+      setPdfFiles([]);
       setMetrics(null);
-      setError("Não foi possível abrir este PDF. Tente outro arquivo.");
+      setError("Não foi possível abrir um dos PDFs. Verifique os arquivos e tente novamente.");
       setMessage("");
     } finally {
       setBusy(false);
@@ -125,6 +193,7 @@ export default function LabelEditor() {
     const viewport = pdfPage.getViewport({ scale });
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
 
+    setPreviewScale(scale);
     canvas.width = Math.floor(viewport.width * dpr);
     canvas.height = Math.floor(viewport.height * dpr);
     canvas.style.width = `${viewport.width}px`;
@@ -152,20 +221,23 @@ export default function LabelEditor() {
   }, [pageNumber]);
 
   function onPdfChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    if (file.type !== "application/pdf") {
-      setError("Selecione um arquivo PDF.");
+    const files = Array.from(event.target.files ?? []);
+    if (!files.length) return;
+
+    const invalid = files.find((file) => file.type !== "application/pdf");
+    if (invalid) {
+      setError(`O arquivo “${invalid.name}” não é um PDF.`);
       return;
     }
-    loadPdf(file);
+
+    loadPdfs(files);
   }
 
   function onLogoChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
-    if (!['image/png', 'image/jpeg'].includes(file.type)) {
-      setError("No MVP, a logo precisa estar em PNG ou JPG.");
+    if (!["image/png", "image/jpeg"].includes(file.type)) {
+      setError("A logo precisa estar em PNG ou JPG.");
       return;
     }
 
@@ -177,7 +249,7 @@ export default function LabelEditor() {
       setLogoAspect(image.naturalWidth / image.naturalHeight || 1);
       setLogoFile(file);
       setLogoUrl(url);
-      setMessage("Logo carregada. Arraste para a posição desejada.");
+      setMessage("Logo carregada. Arraste, redimensione ou gire como quiser.");
     };
     image.onerror = () => {
       URL.revokeObjectURL(url);
@@ -188,12 +260,17 @@ export default function LabelEditor() {
 
   const logoHeightPercent = useMemo(() => {
     if (!metrics) return 10;
-    // Width is normalized by page width. Convert the physical logo height to page-height percentage.
-    return (placement.width * metrics.width / logoAspect / metrics.height) * 100;
-  }, [metrics, placement.width, logoAspect]);
+    return (logoPlacement.width * metrics.width / logoAspect / metrics.height) * 100;
+  }, [metrics, logoPlacement.width, logoAspect]);
 
-  function pointerDown(event: ReactPointerEvent, mode: "move" | "resize") {
-    if (!stageRef.current || !logoFile) return;
+  function pointerDown(
+    event: ReactPointerEvent,
+    mode: "logo-move" | "logo-resize" | "text-move",
+  ) {
+    if (!stageRef.current) return;
+    if ((mode === "logo-move" || mode === "logo-resize") && !logoFile) return;
+    if (mode === "text-move" && !customText.trim()) return;
+
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -201,7 +278,8 @@ export default function LabelEditor() {
       mode,
       startX: event.clientX,
       startY: event.clientY,
-      startPlacement: { ...placement },
+      startLogo: { ...logoPlacement },
+      startText: { ...textPlacement },
     };
   }
 
@@ -214,18 +292,27 @@ export default function LabelEditor() {
     const dx = (event.clientX - drag.startX) / rect.width;
     const dy = (event.clientY - drag.startY) / rect.height;
 
-    if (drag.mode === "move") {
-      const nextX = clamp(drag.startPlacement.x + dx, 0, 1 - drag.startPlacement.width);
+    if (drag.mode === "logo-move") {
+      const nextX = clamp(drag.startLogo.x + dx, 0, 1 - drag.startLogo.width);
       const logoHeightNorm = logoHeightPercent / 100;
-      const nextY = clamp(drag.startPlacement.y + dy, 0, 1 - logoHeightNorm);
-      setPlacement((current) => ({ ...current, x: nextX, y: nextY }));
+      const nextY = clamp(drag.startLogo.y + dy, 0, 1 - logoHeightNorm);
+      setLogoPlacement((current) => ({ ...current, x: nextX, y: nextY }));
       return;
     }
 
-    const minWidth = 0.05;
-    const maxWidth = 1 - drag.startPlacement.x;
-    const nextWidth = clamp(drag.startPlacement.width + dx, minWidth, maxWidth);
-    setPlacement((current) => ({ ...current, width: nextWidth }));
+    if (drag.mode === "logo-resize") {
+      const minWidth = 0.05;
+      const maxWidth = 1 - drag.startLogo.x;
+      const nextWidth = clamp(drag.startLogo.width + dx, minWidth, maxWidth);
+      setLogoPlacement((current) => ({ ...current, width: nextWidth }));
+      return;
+    }
+
+    if (drag.mode === "text-move") {
+      const nextX = clamp(drag.startText.x + dx, 0, 0.98);
+      const nextY = clamp(drag.startText.y + dy, 0, 0.98);
+      setTextPlacement((current) => ({ ...current, x: nextX, y: nextY }));
+    }
   }
 
   function pointerUp(event: ReactPointerEvent) {
@@ -233,50 +320,109 @@ export default function LabelEditor() {
       try {
         event.currentTarget.releasePointerCapture(event.pointerId);
       } catch {
-        // Pointer capture may already be released.
+        // O pointer capture pode já ter sido liberado.
       }
     }
     dragRef.current = null;
   }
 
-  function savePlacement() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(placement));
-    setMessage("Posição salva neste navegador.");
+  function saveConfig() {
+    const config: SavedConfig = {
+      logoPlacement,
+      textPlacement,
+      customText,
+      applyToAll,
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+    setMessage("Configuração salva neste navegador.");
   }
 
-  function resetPlacement() {
-    setPlacement(DEFAULT_PLACEMENT);
-    setMessage("Posição restaurada.");
+  function resetConfig() {
+    setLogoPlacement(DEFAULT_LOGO_PLACEMENT);
+    setTextPlacement(DEFAULT_TEXT_PLACEMENT);
+    setCustomText("");
+    setApplyToAll(true);
+    setMessage("Configuração restaurada.");
+  }
+
+  function getTargetPages(doc: PDFDocument) {
+    if (applyToAll) return doc.getPages();
+    const page = doc.getPage(pageNumber - 1);
+    return [page];
   }
 
   async function buildPdf() {
-    if (!pdfBytesRef.current || !logoFile) {
-      throw new Error("Envie o PDF e a logo antes de gerar.");
+    if (!pdfBytesRef.current) {
+      throw new Error("Envie pelo menos um PDF antes de gerar.");
+    }
+
+    const hasLogo = Boolean(logoFile);
+    const hasText = Boolean(customText.trim());
+    if (!hasLogo && !hasText) {
+      throw new Error("Adicione uma logo ou um texto personalizado antes de gerar.");
     }
 
     const sourceBytes = pdfBytesRef.current.slice(0);
     const doc = await PDFDocument.load(sourceBytes);
-    const logoBytes = await logoFile.arrayBuffer();
-    const logoImage = logoFile.type === "image/png"
-      ? await doc.embedPng(logoBytes)
-      : await doc.embedJpg(logoBytes);
+    const targetPages = getTargetPages(doc);
 
-    for (const page of doc.getPages()) {
+    let logoImage: PDFImage | null = null;
+    if (logoFile) {
+      const logoBytes = await logoFile.arrayBuffer();
+      logoImage = logoFile.type === "image/png"
+        ? await doc.embedPng(logoBytes)
+        : await doc.embedJpg(logoBytes);
+    }
+
+    const font = hasText ? await doc.embedFont(StandardFonts.Helvetica) : null;
+
+    for (const page of targetPages) {
       const pageWidth = page.getWidth();
       const pageHeight = page.getHeight();
-      const width = placement.width * pageWidth;
-      const height = width / logoAspect;
-      const x = placement.x * pageWidth;
-      const yFromTop = placement.y * pageHeight;
-      const y = pageHeight - yFromTop - height;
 
-      page.drawImage(logoImage, {
-        x: clamp(x, 0, Math.max(0, pageWidth - width)),
-        y: clamp(y, 0, Math.max(0, pageHeight - height)),
-        width,
-        height,
-        opacity: placement.opacity,
-      });
+      if (logoImage) {
+        const width = logoPlacement.width * pageWidth;
+        const height = width / logoAspect;
+        const x0 = logoPlacement.x * pageWidth;
+        const y0 = pageHeight - logoPlacement.y * pageHeight - height;
+        const angle = (logoPlacement.rotation * Math.PI) / 180;
+
+        // Ajusta a origem para que a rotação aconteça visualmente pelo centro da logo,
+        // igual à pré-visualização CSS.
+        const centerX = x0 + width / 2;
+        const centerY = y0 + height / 2;
+        const rotatedHalfX = Math.cos(angle) * (width / 2) - Math.sin(angle) * (height / 2);
+        const rotatedHalfY = Math.sin(angle) * (width / 2) + Math.cos(angle) * (height / 2);
+        const drawX = centerX - rotatedHalfX;
+        const drawY = centerY - rotatedHalfY;
+
+        page.drawImage(logoImage, {
+          x: drawX,
+          y: drawY,
+          width,
+          height,
+          opacity: logoPlacement.opacity,
+          rotate: degrees(logoPlacement.rotation),
+        });
+      }
+
+      if (font && customText.trim()) {
+        const fontSize = textPlacement.fontSize;
+        const lines = customText.replace(/\r/g, "").split("\n");
+        const lineHeight = fontSize * 1.2;
+        const startX = textPlacement.x * pageWidth;
+        const startYFromTop = textPlacement.y * pageHeight;
+
+        lines.forEach((line, index) => {
+          if (!line) return;
+          page.drawText(line, {
+            x: clamp(startX, 0, pageWidth - 2),
+            y: pageHeight - startYFromTop - fontSize - index * lineHeight,
+            size: fontSize,
+            font,
+          });
+        });
+      }
     }
 
     return doc.save();
@@ -291,14 +437,25 @@ export default function LabelEditor() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${pdfFile?.name.replace(/\.pdf$/i, "") || "etiquetas"}-com-logo.pdf`;
+      a.download = pdfFiles.length === 1
+        ? `${fileBaseName(pdfFiles[0].name)}-padronizado.pdf`
+        : "etiquetas-padronizadas.pdf";
       document.body.appendChild(a);
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      setMessage("PDF final gerado.");
+      setMessage(
+        applyToAll
+          ? "PDF final gerado com a mesma configuração em todas as etiquetas."
+          : `PDF final gerado aplicando somente na etiqueta ${pageNumber}.`,
+      );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Erro ao gerar o PDF.");
+      const detail = err instanceof Error ? err.message : "Erro ao gerar o PDF.";
+      if (/WinAnsi|encode/i.test(detail)) {
+        setError("O texto contém um caractere não suportado. Remova emojis ou símbolos especiais e tente novamente.");
+      } else {
+        setError(detail);
+      }
     } finally {
       setBusy(false);
     }
@@ -331,11 +488,18 @@ export default function LabelEditor() {
       };
       setMessage("Abrindo a impressão do navegador...");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Erro ao preparar a impressão.");
+      const detail = err instanceof Error ? err.message : "Erro ao preparar a impressão.";
+      if (/WinAnsi|encode/i.test(detail)) {
+        setError("O texto contém um caractere não suportado. Remova emojis ou símbolos especiais e tente novamente.");
+      } else {
+        setError(detail);
+      }
     } finally {
       setBusy(false);
     }
   }
+
+  const canGenerate = pdfFiles.length > 0 && (Boolean(logoFile) || Boolean(customText.trim()));
 
   return (
     <main className="app-shell">
@@ -343,7 +507,9 @@ export default function LabelEditor() {
         <div>
           <p className="eyebrow">ETIQUETAS E-COMMERCE</p>
           <h1>Logo nas Etiquetas</h1>
-          <p className="subtitle">Posicione sua marca visualmente e aplique em todas as etiquetas do PDF.</p>
+          <p className="subtitle">
+            Padronize todas as etiquetas com a mesma logo, rotação e texto personalizado.
+          </p>
         </div>
         <div className="privacy-badge">Processamento local no navegador</div>
       </header>
@@ -360,15 +526,26 @@ export default function LabelEditor() {
             )}
           </div>
 
-          {!pdfFile ? (
+          {!pdfFiles.length ? (
             <label className="dropzone">
-              <input type="file" accept="application/pdf" onChange={onPdfChange} />
+              <input type="file" accept="application/pdf" multiple onChange={onPdfChange} />
               <span className="drop-icon">PDF</span>
-              <strong>Escolher PDF de etiquetas</strong>
-              <small>O arquivo não precisa ser enviado para um servidor.</small>
+              <strong>Escolher um ou vários PDFs</strong>
+              <small>Todos os PDFs selecionados serão unidos em uma sequência de etiquetas.</small>
             </label>
           ) : (
             <>
+              <div className="loaded-files">
+                <div>
+                  <strong>{metrics?.pageCount ?? 0} etiquetas</strong>
+                  <span>{pdfFiles.length} PDF{pdfFiles.length === 1 ? "" : "s"} carregado{pdfFiles.length === 1 ? "" : "s"}</span>
+                </div>
+                <label className="mini-file-button">
+                  <input type="file" accept="application/pdf" multiple onChange={onPdfChange} />
+                  Trocar PDFs
+                </label>
+              </div>
+
               <div className="stage-wrap">
                 <div
                   className="pdf-stage"
@@ -378,32 +555,56 @@ export default function LabelEditor() {
                   onPointerCancel={pointerUp}
                 >
                   <canvas ref={canvasRef} />
+
                   {logoUrl && (
                     <div
                       className="logo-overlay"
                       style={{
-                        left: `${placement.x * 100}%`,
-                        top: `${placement.y * 100}%`,
-                        width: `${placement.width * 100}%`,
-                        opacity: placement.opacity,
+                        left: `${logoPlacement.x * 100}%`,
+                        top: `${logoPlacement.y * 100}%`,
+                        width: `${logoPlacement.width * 100}%`,
+                        opacity: logoPlacement.opacity,
+                        transform: `rotate(${logoPlacement.rotation}deg)`,
                       }}
-                      onPointerDown={(e) => pointerDown(e, "move")}
+                      onPointerDown={(e) => pointerDown(e, "logo-move")}
                     >
                       <img src={logoUrl} alt="Logo sobre a etiqueta" draggable={false} />
                       <button
                         type="button"
                         className="resize-handle"
                         aria-label="Redimensionar logo"
-                        onPointerDown={(e) => pointerDown(e, "resize")}
+                        onPointerDown={(e) => pointerDown(e, "logo-resize")}
                       />
+                    </div>
+                  )}
+
+                  {customText.trim() && (
+                    <div
+                      className="text-overlay"
+                      style={{
+                        left: `${textPlacement.x * 100}%`,
+                        top: `${textPlacement.y * 100}%`,
+                        fontSize: `${textPlacement.fontSize * previewScale}px`,
+                      }}
+                      onPointerDown={(e) => pointerDown(e, "text-move")}
+                    >
+                      {customText}
                     </div>
                   )}
                 </div>
               </div>
 
               <div className="page-nav">
-                <button type="button" disabled={pageNumber <= 1} onClick={() => setPageNumber((p) => p - 1)}>← Anterior</button>
-                <button type="button" disabled={!metrics || pageNumber >= metrics.pageCount} onClick={() => setPageNumber((p) => p + 1)}>Próxima →</button>
+                <button type="button" disabled={pageNumber <= 1} onClick={() => setPageNumber((p) => p - 1)}>
+                  ← Anterior
+                </button>
+                <button
+                  type="button"
+                  disabled={!metrics || pageNumber >= metrics.pageCount}
+                  onClick={() => setPageNumber((p) => p + 1)}
+                >
+                  Próxima →
+                </button>
               </div>
             </>
           )}
@@ -411,9 +612,27 @@ export default function LabelEditor() {
 
         <aside className="controls-card">
           <div className="card-heading">
-            <div><span className="step">2</span><strong>Logo e posição</strong></div>
+            <div><span className="step">2</span><strong>Padronização</strong></div>
           </div>
 
+          <label className="apply-all-toggle">
+            <input
+              type="checkbox"
+              checked={applyToAll}
+              onChange={(e) => setApplyToAll(e.target.checked)}
+            />
+            <span className="toggle-track"><span /></span>
+            <span className="toggle-copy">
+              <strong>Aplicar em todas as etiquetas</strong>
+              <small>
+                {applyToAll
+                  ? `Logo e texto serão repetidos nas ${metrics?.pageCount ?? "todas as"} etiquetas.`
+                  : `As alterações serão aplicadas somente na etiqueta ${pageNumber}.`}
+              </small>
+            </span>
+          </label>
+
+          <div className="section-label">LOGO</div>
           <div className="control-group">
             <label className="file-button secondary">
               <input type="file" accept="image/png,image/jpeg" onChange={onLogoChange} />
@@ -430,8 +649,11 @@ export default function LabelEditor() {
                 min="0"
                 max="100"
                 step="0.1"
-                value={(placement.x * 100).toFixed(1)}
-                onChange={(e) => setPlacement((p) => ({ ...p, x: clamp(Number(e.target.value) / 100, 0, 1 - p.width) }))}
+                value={(logoPlacement.x * 100).toFixed(1)}
+                onChange={(e) => setLogoPlacement((p) => ({
+                  ...p,
+                  x: clamp(Number(e.target.value) / 100, 0, 1 - p.width),
+                }))}
               />
               <em>%</em>
             </label>
@@ -442,48 +664,99 @@ export default function LabelEditor() {
                 min="0"
                 max="100"
                 step="0.1"
-                value={(placement.y * 100).toFixed(1)}
-                onChange={(e) => setPlacement((p) => ({ ...p, y: clamp(Number(e.target.value) / 100, 0, 1) }))}
+                value={(logoPlacement.y * 100).toFixed(1)}
+                onChange={(e) => setLogoPlacement((p) => ({
+                  ...p,
+                  y: clamp(Number(e.target.value) / 100, 0, 1),
+                }))}
               />
               <em>%</em>
             </label>
           </div>
 
           <label className="range-field">
-            <span><b>Tamanho</b><strong>{Math.round(placement.width * 100)}%</strong></span>
+            <span><b>Tamanho da logo</b><strong>{Math.round(logoPlacement.width * 100)}%</strong></span>
             <input
               type="range"
               min="5"
               max="80"
-              value={placement.width * 100}
-              onChange={(e) => setPlacement((p) => ({ ...p, width: Number(e.target.value) / 100 }))}
+              value={logoPlacement.width * 100}
+              onChange={(e) => setLogoPlacement((p) => ({ ...p, width: Number(e.target.value) / 100 }))}
             />
           </label>
 
           <label className="range-field">
-            <span><b>Opacidade</b><strong>{Math.round(placement.opacity * 100)}%</strong></span>
+            <span><b>Girar logo</b><strong>{Math.round(logoPlacement.rotation)}°</strong></span>
+            <input
+              type="range"
+              min="-180"
+              max="180"
+              step="1"
+              value={logoPlacement.rotation}
+              onChange={(e) => setLogoPlacement((p) => ({ ...p, rotation: Number(e.target.value) }))}
+            />
+          </label>
+
+          <div className="rotation-buttons">
+            <button type="button" className="ghost" onClick={() => setLogoPlacement((p) => ({ ...p, rotation: normalizeRotation(p.rotation - 90) }))}>↶ 90°</button>
+            <button type="button" className="ghost" onClick={() => setLogoPlacement((p) => ({ ...p, rotation: 0 }))}>0°</button>
+            <button type="button" className="ghost" onClick={() => setLogoPlacement((p) => ({ ...p, rotation: normalizeRotation(p.rotation + 90) }))}>90° ↷</button>
+          </div>
+
+          <label className="range-field">
+            <span><b>Opacidade</b><strong>{Math.round(logoPlacement.opacity * 100)}%</strong></span>
             <input
               type="range"
               min="10"
               max="100"
-              value={placement.opacity * 100}
-              onChange={(e) => setPlacement((p) => ({ ...p, opacity: Number(e.target.value) / 100 }))}
+              value={logoPlacement.opacity * 100}
+              onChange={(e) => setLogoPlacement((p) => ({ ...p, opacity: Number(e.target.value) / 100 }))}
+            />
+          </label>
+
+          <div className="section-label">TEXTO PERSONALIZADO</div>
+          <label className="text-field">
+            <span>Texto que aparecerá na etiqueta</span>
+            <textarea
+              rows={3}
+              value={customText}
+              maxLength={180}
+              placeholder="Ex.: Obrigado pela compra!"
+              onChange={(e) => setCustomText(e.target.value)}
+            />
+            <small>{customText.length}/180 caracteres · arraste o texto na prévia para posicionar</small>
+          </label>
+
+          <label className="range-field">
+            <span><b>Tamanho do texto</b><strong>{Math.round(textPlacement.fontSize)} pt</strong></span>
+            <input
+              type="range"
+              min="8"
+              max="48"
+              step="1"
+              value={textPlacement.fontSize}
+              onChange={(e) => setTextPlacement((p) => ({ ...p, fontSize: Number(e.target.value) }))}
             />
           </label>
 
           <div className="hint">
-            <strong>Como posicionar</strong>
-            <p>Arraste a logo diretamente sobre a etiqueta. Use o ponto no canto inferior direito para redimensionar.</p>
+            <strong>Posicionamento visual</strong>
+            <p>Arraste a logo e o texto diretamente sobre a etiqueta. A prévia mostra onde eles serão aplicados no PDF final.</p>
           </div>
 
           <div className="two-buttons">
-            <button type="button" className="ghost" onClick={resetPlacement}>Restaurar</button>
-            <button type="button" className="ghost" onClick={savePlacement}>Salvar posição</button>
+            <button type="button" className="ghost" onClick={resetConfig}>Restaurar</button>
+            <button type="button" className="ghost" onClick={saveConfig}>Salvar configuração</button>
           </div>
 
-          <div className="apply-note">
-            <span>✓</span>
-            <p><strong>A mesma posição será aplicada automaticamente em todas as páginas.</strong><br />A posição é proporcional ao tamanho de cada etiqueta.</p>
+          <div className={applyToAll ? "apply-note" : "apply-note single-page"}>
+            <span>{applyToAll ? "✓" : "1"}</span>
+            <p>
+              <strong>{applyToAll ? "Padronização ativada." : "Modo individual ativado."}</strong><br />
+              {applyToAll
+                ? "A mesma configuração será aplicada em todas as etiquetas carregadas, inclusive quando houver vários PDFs."
+                : `Somente a página ${pageNumber} receberá a logo e o texto.`}
+            </p>
           </div>
 
           <div className="divider" />
@@ -492,10 +765,10 @@ export default function LabelEditor() {
             <div><span className="step">3</span><strong>Finalizar</strong></div>
           </div>
 
-          <button type="button" className="primary" onClick={downloadPdf} disabled={busy || !pdfFile || !logoFile}>
-            {busy ? "Processando..." : "Gerar PDF com logo"}
+          <button type="button" className="primary" onClick={downloadPdf} disabled={busy || !canGenerate}>
+            {busy ? "Processando..." : "Gerar PDF padronizado"}
           </button>
-          <button type="button" className="print" onClick={printPdf} disabled={busy || !pdfFile || !logoFile}>
+          <button type="button" className="print" onClick={printPdf} disabled={busy || !canGenerate}>
             Imprimir etiquetas
           </button>
 
@@ -506,8 +779,8 @@ export default function LabelEditor() {
       </section>
 
       <footer>
-        <span>Compatível com PDFs multipágina.</span>
-        <span>PNG/JPG · Vercel · sem banco de dados</span>
+        <span>Compatível com múltiplos PDFs e PDFs multipágina.</span>
+        <span>PNG/JPG · texto personalizado · Vercel · sem banco de dados</span>
       </footer>
     </main>
   );
