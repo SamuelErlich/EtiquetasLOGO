@@ -329,7 +329,6 @@ footer { display: flex; justify-content: space-between; gap: 16px; color: var(--
   line-height: 1.2;
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: Helvetica, Arial, sans-serif;
   user-select: none;
   touch-action: none;
 }
@@ -340,3 +339,8 @@ footer { display: flex; justify-content: space-between; gap: 16px; color: var(--
   .loaded-files { align-items: flex-start; flex-direction: column; }
   .mini-file-button { width: 100%; text-align: center; }
 }
+
+.select-field { display: block; margin-bottom: 16px; }
+.select-field > span { display: block; color: #475467; font-size: 12px; font-weight: 700; margin-bottom: 6px; }
+.select-field select { width: 100%; border: 1px solid #d0d5dd; border-radius: 10px; padding: 10px 11px; outline: none; background: white; color: var(--text); }
+.select-field select:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.1); }

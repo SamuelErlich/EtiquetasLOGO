@@ -48,3 +48,15 @@ npx vercel --prod
 ## Observação sobre impressão
 
 A impressão usa a janela padrão do navegador. Para etiquetas térmicas 100×150 mm, configure o tamanho de papel correto no driver da impressora e use escala 100%/tamanho real quando necessário.
+
+
+## Novidades da versão 3
+
+- Rotação independente do texto de -180° a 180°.
+- Atalhos para girar o texto -90°, 0° e +90°.
+- Seletor de fontes para o texto personalizado.
+- Fontes disponíveis: 12 variações de Helvetica, Times Roman e Courier, incluindo normal, negrito, itálico e negrito itálico.
+- A fonte e a rotação escolhidas são mantidas na pré-visualização e no PDF final.
+- A configuração salva no navegador agora inclui fonte e rotação do texto.
+
+- Migração automática: se houver configuração salva na versão 2, ela continua sendo lida na versão 3.

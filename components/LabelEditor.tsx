@@ -18,10 +18,26 @@ type LogoPlacement = {
   rotation: number;
 };
 
+type TextFontId =
+  | "helvetica"
+  | "helveticaBold"
+  | "helveticaOblique"
+  | "helveticaBoldOblique"
+  | "times"
+  | "timesBold"
+  | "timesItalic"
+  | "timesBoldItalic"
+  | "courier"
+  | "courierBold"
+  | "courierOblique"
+  | "courierBoldOblique";
+
 type TextPlacement = {
   x: number;
   y: number;
   fontSize: number;
+  rotation: number;
+  font: TextFontId;
 };
 
 type PdfMetrics = {
@@ -49,9 +65,33 @@ const DEFAULT_TEXT_PLACEMENT: TextPlacement = {
   x: 0.08,
   y: 0.08,
   fontSize: 16,
+  rotation: 0,
+  font: "helvetica",
 };
 
-const STORAGE_KEY = "etiqueta-logo-config-v2";
+const FONT_OPTIONS: Array<{
+  id: TextFontId;
+  label: string;
+  pdf: StandardFonts;
+  cssFamily: string;
+  cssWeight?: number;
+  cssStyle?: "normal" | "italic";
+}> = [
+  { id: "helvetica", label: "Helvetica", pdf: StandardFonts.Helvetica, cssFamily: "Helvetica, Arial, sans-serif" },
+  { id: "helveticaBold", label: "Helvetica Negrito", pdf: StandardFonts.HelveticaBold, cssFamily: "Helvetica, Arial, sans-serif", cssWeight: 700 },
+  { id: "helveticaOblique", label: "Helvetica Itálico", pdf: StandardFonts.HelveticaOblique, cssFamily: "Helvetica, Arial, sans-serif", cssStyle: "italic" },
+  { id: "helveticaBoldOblique", label: "Helvetica Negrito Itálico", pdf: StandardFonts.HelveticaBoldOblique, cssFamily: "Helvetica, Arial, sans-serif", cssWeight: 700, cssStyle: "italic" },
+  { id: "times", label: "Times Roman", pdf: StandardFonts.TimesRoman, cssFamily: '"Times New Roman", Times, serif' },
+  { id: "timesBold", label: "Times Negrito", pdf: StandardFonts.TimesRomanBold, cssFamily: '"Times New Roman", Times, serif', cssWeight: 700 },
+  { id: "timesItalic", label: "Times Itálico", pdf: StandardFonts.TimesRomanItalic, cssFamily: '"Times New Roman", Times, serif', cssStyle: "italic" },
+  { id: "timesBoldItalic", label: "Times Negrito Itálico", pdf: StandardFonts.TimesRomanBoldItalic, cssFamily: '"Times New Roman", Times, serif', cssWeight: 700, cssStyle: "italic" },
+  { id: "courier", label: "Courier", pdf: StandardFonts.Courier, cssFamily: '"Courier New", Courier, monospace' },
+  { id: "courierBold", label: "Courier Negrito", pdf: StandardFonts.CourierBold, cssFamily: '"Courier New", Courier, monospace', cssWeight: 700 },
+  { id: "courierOblique", label: "Courier Itálico", pdf: StandardFonts.CourierOblique, cssFamily: '"Courier New", Courier, monospace', cssStyle: "italic" },
+  { id: "courierBoldOblique", label: "Courier Negrito Itálico", pdf: StandardFonts.CourierBoldOblique, cssFamily: '"Courier New", Courier, monospace', cssWeight: 700, cssStyle: "italic" },
+];
+
+const STORAGE_KEY = "etiqueta-logo-config-v3";
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
@@ -99,7 +139,7 @@ export default function LabelEditor() {
   }>(null);
 
   useEffect(() => {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem("etiqueta-logo-config-v2");
     if (!raw) return;
 
     try {
@@ -258,6 +298,11 @@ export default function LabelEditor() {
     image.src = url;
   }
 
+  const selectedFont = useMemo(
+    () => FONT_OPTIONS.find((option) => option.id === textPlacement.font) ?? FONT_OPTIONS[0],
+    [textPlacement.font],
+  );
+
   const logoHeightPercent = useMemo(() => {
     if (!metrics) return 10;
     return (logoPlacement.width * metrics.width / logoAspect / metrics.height) * 100;
@@ -374,7 +419,7 @@ export default function LabelEditor() {
         : await doc.embedJpg(logoBytes);
     }
 
-    const font = hasText ? await doc.embedFont(StandardFonts.Helvetica) : null;
+    const font = hasText ? await doc.embedFont(selectedFont.pdf) : null;
 
     for (const page of targetPages) {
       const pageWidth = page.getWidth();
@@ -410,16 +455,28 @@ export default function LabelEditor() {
         const fontSize = textPlacement.fontSize;
         const lines = customText.replace(/\r/g, "").split("\n");
         const lineHeight = fontSize * 1.2;
-        const startX = textPlacement.x * pageWidth;
-        const startYFromTop = textPlacement.y * pageHeight;
+        const pivotX = textPlacement.x * pageWidth;
+        const pivotY = pageHeight - textPlacement.y * pageHeight;
+        const pdfRotation = -textPlacement.rotation;
+        const angle = (pdfRotation * Math.PI) / 180;
 
         lines.forEach((line, index) => {
           if (!line) return;
+
+          // A rotação do texto usa o canto superior esquerdo como pivô,
+          // igual à pré-visualização no navegador.
+          const baselineOffset = fontSize + index * lineHeight;
+          const localX = 0;
+          const localY = -baselineOffset;
+          const rotatedX = localX * Math.cos(angle) - localY * Math.sin(angle);
+          const rotatedY = localX * Math.sin(angle) + localY * Math.cos(angle);
+
           page.drawText(line, {
-            x: clamp(startX, 0, pageWidth - 2),
-            y: pageHeight - startYFromTop - fontSize - index * lineHeight,
+            x: pivotX + rotatedX,
+            y: pivotY + rotatedY,
             size: fontSize,
             font,
+            rotate: degrees(pdfRotation),
           });
         });
       }
@@ -508,7 +565,7 @@ export default function LabelEditor() {
           <p className="eyebrow">ETIQUETAS E-COMMERCE</p>
           <h1>Logo nas Etiquetas</h1>
           <p className="subtitle">
-            Padronize todas as etiquetas com a mesma logo, rotação e texto personalizado.
+            Padronize todas as etiquetas com logo, texto, rotação e fontes personalizadas.
           </p>
         </div>
         <div className="privacy-badge">Processamento local no navegador</div>
@@ -585,6 +642,11 @@ export default function LabelEditor() {
                         left: `${textPlacement.x * 100}%`,
                         top: `${textPlacement.y * 100}%`,
                         fontSize: `${textPlacement.fontSize * previewScale}px`,
+                        transform: `rotate(${textPlacement.rotation}deg)`,
+                        transformOrigin: "top left",
+                        fontFamily: selectedFont.cssFamily,
+                        fontWeight: selectedFont.cssWeight ?? 400,
+                        fontStyle: selectedFont.cssStyle ?? "normal",
                       }}
                       onPointerDown={(e) => pointerDown(e, "text-move")}
                     >
@@ -727,6 +789,18 @@ export default function LabelEditor() {
             <small>{customText.length}/180 caracteres · arraste o texto na prévia para posicionar</small>
           </label>
 
+          <label className="select-field">
+            <span>Fonte do texto</span>
+            <select
+              value={textPlacement.font}
+              onChange={(e) => setTextPlacement((p) => ({ ...p, font: e.target.value as TextFontId }))}
+            >
+              {FONT_OPTIONS.map((option) => (
+                <option key={option.id} value={option.id}>{option.label}</option>
+              ))}
+            </select>
+          </label>
+
           <label className="range-field">
             <span><b>Tamanho do texto</b><strong>{Math.round(textPlacement.fontSize)} pt</strong></span>
             <input
@@ -738,6 +812,24 @@ export default function LabelEditor() {
               onChange={(e) => setTextPlacement((p) => ({ ...p, fontSize: Number(e.target.value) }))}
             />
           </label>
+
+          <label className="range-field">
+            <span><b>Girar texto</b><strong>{Math.round(textPlacement.rotation)}°</strong></span>
+            <input
+              type="range"
+              min="-180"
+              max="180"
+              step="1"
+              value={textPlacement.rotation}
+              onChange={(e) => setTextPlacement((p) => ({ ...p, rotation: Number(e.target.value) }))}
+            />
+          </label>
+
+          <div className="rotation-buttons">
+            <button type="button" className="ghost" onClick={() => setTextPlacement((p) => ({ ...p, rotation: normalizeRotation(p.rotation - 90) }))}>↶ 90°</button>
+            <button type="button" className="ghost" onClick={() => setTextPlacement((p) => ({ ...p, rotation: 0 }))}>0°</button>
+            <button type="button" className="ghost" onClick={() => setTextPlacement((p) => ({ ...p, rotation: normalizeRotation(p.rotation + 90) }))}>90° ↷</button>
+          </div>
 
           <div className="hint">
             <strong>Posicionamento visual</strong>
@@ -780,7 +872,7 @@ export default function LabelEditor() {
 
       <footer>
         <span>Compatível com múltiplos PDFs e PDFs multipágina.</span>
-        <span>PNG/JPG · texto personalizado · Vercel · sem banco de dados</span>
+        <span>PNG/JPG · texto com fontes e rotação · Vercel · sem banco de dados</span>
       </footer>
     </main>
   );
