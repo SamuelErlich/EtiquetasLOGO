@@ -628,7 +628,10 @@ export default function LabelEditor() {
             Padronize todas as etiquetas com logo, texto, rotação e fontes personalizadas.
           </p>
         </div>
-        <div className="privacy-badge">Processamento local no navegador</div>
+        <div className="topbar-actions">
+          <div className="version-badge">V5 · seleção + editor de texto</div>
+          <div className="privacy-badge">Processamento local no navegador</div>
+        </div>
       </header>
 
       <section className="workspace">

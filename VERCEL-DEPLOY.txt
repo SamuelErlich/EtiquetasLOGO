@@ -1,0 +1,23 @@
+ETIQUETA LOGO V5 - DEPLOY CORRETO NA VERCEL
+
+1. Este ZIP foi criado com app/, components/, package.json etc. diretamente na raiz.
+2. No seu repositório GitHub, substitua os arquivos antigos por estes arquivos.
+3. Confira que components/LabelEditor.tsx no GitHub contém o texto:
+   V5 · seleção + editor de texto
+4. Faça Commit e Push para a branch conectada à Vercel (normalmente main).
+5. Na Vercel, abra Deployments e confirme que o novo deploy mostra o hash do NOVO commit.
+6. Abra o site. No topo deve aparecer o selo preto:
+   V5 · seleção + editor de texto
+
+IMPORTANTE:
+Clicar apenas em "Redeploy" em um deployment antigo recompila o mesmo commit. Isso não envia arquivos novos.
+
+Recursos desta versão:
+- selecionar logo ou texto clicando no elemento
+- excluir selecionado por Delete ou Backspace
+- botão de lixeira no elemento e no painel
+- alinhamento de texto: esquerda / centro / direita
+- largura ajustável da caixa de texto
+- girar texto e logo
+- botão grande "Carregar outro PDF"
+- aplicar padronização em todas as etiquetas

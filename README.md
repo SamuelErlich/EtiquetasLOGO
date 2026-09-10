@@ -68,3 +68,12 @@ A impressão usa a janela padrão do navegador. Para etiquetas térmicas 100×15
 ### Compatibilidade
 
 Configurações salvas nas versões 2 e 3 continuam sendo lidas. Campos novos, como alinhamento e largura da caixa de texto, recebem valores padrão automaticamente.
+
+
+## Versão 0.5.0
+
+Esta versão exibe o selo **V5 · seleção + editor de texto** no topo da aplicação para confirmar visualmente que o deploy novo está ativo.
+
+Inclui seleção da logo/texto, exclusão por Delete/Backspace ou lixeira, alinhamento esquerda/centro/direita, largura da caixa de texto e botão destacado para carregar outro PDF.
+
+**Importante para Vercel/GitHub:** substitua os arquivos na raiz do repositório (app, components, package.json etc.) e faça commit/push. Clicar apenas em Redeploy na Vercel recompila o mesmo commit e não envia arquivos novos.

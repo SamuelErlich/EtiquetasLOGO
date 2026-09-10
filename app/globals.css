@@ -523,3 +523,27 @@ kbd {
   .reload-pdf-button { width: 100%; min-width: 0; }
   .selection-toolbar { align-items: flex-start; }
 }
+
+/* V5: marcador visual de deploy para confirmar a versão publicada */
+.topbar-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+.version-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: #111827;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: .02em;
+  box-shadow: 0 5px 14px rgba(17,24,39,.14);
+}
+@media (max-width: 640px) {
+  .topbar-actions { align-items: flex-start; width: 100%; }
+}
